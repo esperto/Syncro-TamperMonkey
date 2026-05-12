@@ -1,7 +1,8 @@
 // ==UserScript==
 // @name         Syncro – Duration Helper - Final
+// Credit:       https://github.com/esperto/Syncro-TamperMonkey
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.4 (texomans-v1)
 // @description  Add h:m duration presets to both the Labor Log modal and the Comment form
 // @author       Nick F
 // @match        https://*.syncromsp.com/tickets/*
@@ -75,72 +76,226 @@
     return el;
   }
 
-  function createBar(id) {
-    var bar = document.createElement("div");
-    bar.id = id;
-    bar.style.display = "flex";
-    bar.style.flexWrap = "wrap";
-    bar.style.alignItems = "center";
-    bar.style.gap = "6px";
-    bar.style.marginTop = "10px";
-    bar.style.padding = "10px 12px";
-    bar.style.background = "#f5f7ff";
-    bar.style.border = "1px solid #d0d8f0";
-    bar.style.borderRadius = "8px";
-    bar.style.fontFamily = "Roboto, Helvetica, Arial, sans-serif";
+	function createBar(id) {
+	  var pageStyles = window.getComputedStyle(document.body);
 
-    var label = makeEl("span", { style: { fontSize: "13px", fontWeight: "600", color: "#444" } });
-    label.innerHTML = "&#9201; Duration:";
-    bar.appendChild(label);
+	  var bg = pageStyles.backgroundColor || "#222";
+	  var fg = pageStyles.color || "#ddd";
 
-    bar.appendChild(makeEl("input", {
-      className: "tm-hrs", type: "number", min: "0", max: "23", value: "1",
-      style: { width: "46px", padding: "5px 4px", border: "1px solid #bbb",
-               borderRadius: "4px", textAlign: "center", fontSize: "13px" }
-    }));
-    bar.appendChild(makeEl("span", { style: { fontSize: "12px", color: "#666" } }, "h"));
+	  function rgba(color, alpha) {
+	    if (!color.startsWith("rgb")) return color;
 
-    bar.appendChild(makeEl("input", {
-      className: "tm-mins", type: "number", min: "0", max: "59", value: "0", step: "5",
-      style: { width: "46px", padding: "5px 4px", border: "1px solid #bbb",
-               borderRadius: "4px", textAlign: "center", fontSize: "13px" }
-    }));
-    bar.appendChild(makeEl("span", { style: { fontSize: "12px", color: "#666" } }, "m"));
+	    var vals = color.match(/\d+/g);
+	    if (!vals || vals.length < 3) return color;
 
-    bar.appendChild(makeEl("button", {
-      className: "tm-apply", type: "button",
-      style: { padding: "5px 14px", background: "#1976d2", color: "#fff", border: "none",
-               borderRadius: "4px", cursor: "pointer", fontSize: "13px", fontWeight: "500" }
-    }, "Apply"));
+	    return "rgba(" + vals[0] + "," + vals[1] + "," + vals[2] + "," + alpha + ")";
+	  }
 
-    bar.appendChild(makeEl("span", { style: { fontSize: "12px", color: "#666", marginLeft: "2px" } }, "|"));
+	  var isDark =
+	    pageStyles.backgroundColor.match(/\d+/g)
+	      .slice(0, 3)
+	      .map(Number)
+	      .reduce((a, b) => a + b, 0) / 3 < 128;
 
-    var presets = [
-      { h: 0, m: 15, text: "15m" },
-      { h: 0, m: 30, text: "30m" },
-      { h: 0, m: 45, text: "45m" },
-      { h: 1, m: 0,  text: "1h" },
-      { h: 1, m: 30, text: "1.5h" },
-      { h: 2, m: 0,  text: "2h" }
-    ];
+	  var subtleBg = isDark ? rgba(fg, 0.06) : "#f7f8fb";
+	  var subtleBorder = isDark ? rgba(fg, 0.18) : "#d9dce3";
+	  var buttonBg = isDark ? rgba(fg, 0.10) : "#ffffff";
+	  var buttonHover = isDark ? rgba(fg, 0.18) : "#eef2f7";
 
-    for (var i = 0; i < presets.length; i++) {
-      bar.appendChild(makeEl("button", {
-        className: "tm-preset", type: "button",
-        "data-h": String(presets[i].h), "data-m": String(presets[i].m),
-        style: { padding: "4px 10px", background: "#e3eafc", color: "#1565c0",
-                 border: "1px solid #b0c4f5", borderRadius: "4px", cursor: "pointer",
-                 fontSize: "12px", fontWeight: "500" }
-      }, presets[i].text));
-    }
+	  var bar = document.createElement("div");
+	  bar.id = id;
 
-    bar.appendChild(makeEl("span", {
-      className: "tm-status",
-      style: { fontSize: "12px", color: "#555", marginLeft: "auto" }
-    }));
+	  Object.assign(bar.style, {
+	    display: "flex",
+	    flexWrap: "wrap",
+	    alignItems: "center",
+	    gap: "6px",
+	    marginTop: "10px",
+	    padding: "10px 12px",
+	    background: subtleBg,
+	    color: fg,
+	    border: "1px solid " + subtleBorder,
+	    borderRadius: "8px",
+	    fontFamily: "Roboto, Helvetica, Arial, sans-serif",
+	    backdropFilter: "blur(4px)"
+	  });
 
-    return bar;
-  }
+	  function makeEl(tag, attrs, text) {
+	    var el = document.createElement(tag);
+
+	    if (attrs) {
+	      for (var key in attrs) {
+	        if (key === "style" && typeof attrs[key] === "object") {
+	          Object.assign(el.style, attrs[key]);
+	        } else if (key === "className") {
+	          el.className = attrs[key];
+	        } else {
+	          el.setAttribute(key, attrs[key]);
+	        }
+	      }
+	    }
+
+	    if (text) el.textContent = text;
+
+	    return el;
+	  }
+
+	  function themedButton(text, className, extraAttrs) {
+	    var btn = makeEl(
+	      "button",
+	      Object.assign(
+	        {
+	          className: className,
+	          type: "button",
+	          style: {
+	            padding: "5px 12px",
+	            background: buttonBg,
+	            color: fg,
+	            border: "1px solid " + subtleBorder,
+	            borderRadius: "4px",
+	            cursor: "pointer",
+	            fontSize: "12px",
+	            fontWeight: "500",
+	            transition: "all 0.15s ease"
+	          }
+	        },
+	        extraAttrs || {}
+	      ),
+	      text
+	    );
+
+	    btn.addEventListener("mouseenter", function () {
+	      btn.style.background = buttonHover;
+	    });
+
+	    btn.addEventListener("mouseleave", function () {
+	      btn.style.background = buttonBg;
+	    });
+
+	    return btn;
+	  }
+
+	  var label = makeEl(
+	    "span",
+	    {
+	      style: {
+	        fontSize: "13px",
+	        fontWeight: "600",
+	        color: fg
+	      }
+	    }
+	  );
+
+	  label.innerHTML = "&#9201; Duration:";
+	  bar.appendChild(label);
+
+	  function themedInput(className, value, max) {
+	    return makeEl("input", {
+	      className: className,
+	      type: "number",
+	      min: "0",
+	      max: max,
+	      value: value,
+	      style: {
+	        width: "46px",
+	        padding: "5px 4px",
+	        background: isDark ? rgba(fg, 0.04) : "#ffffff",
+	        color: fg,
+	        border: "1px solid " + subtleBorder,
+	        borderRadius: "4px",
+	        textAlign: "center",
+	        fontSize: "13px"
+	      }
+	    });
+	  }
+
+	  bar.appendChild(themedInput("tm-hrs", "1", "23"));
+
+	  bar.appendChild(
+	    makeEl(
+	      "span",
+	      {
+	        style: {
+	          fontSize: "12px",
+	          color: fg
+	        }
+	      },
+	      "h"
+	    )
+	  );
+
+	  bar.appendChild(themedInput("tm-mins", "0", "59"));
+
+	  bar.appendChild(
+	    makeEl(
+	      "span",
+	      {
+	        style: {
+	          fontSize: "12px",
+	          color: fg
+	        }
+	      },
+	      "m"
+	    )
+	  );
+
+	  bar.appendChild(
+	    themedButton("Apply", "tm-apply", {
+	      style: {
+            background: isDark ? "rgba(25,118,210,0.18)" : "#eaf2ff",
+            color: isDark ? fg : "#174ea6",
+            border: isDark
+              ? "1px solid rgba(25,118,210,0.45)"
+              : "1px solid #9bbcf2"
+        }
+	    })
+	  );
+
+	  bar.appendChild(
+	    makeEl(
+	      "span",
+	      {
+	        style: {
+	          fontSize: "12px",
+	          color: rgba(fg, 0.5),
+	          marginLeft: "2px"
+	        }
+	      },
+	      "|"
+	    )
+	  );
+
+	  var presets = [
+	    { h: 0, m: 15, text: "15m" },
+	    { h: 0, m: 30, text: "30m" },
+	    { h: 0, m: 45, text: "45m" },
+	    { h: 1, m: 0, text: "1h" },
+	    { h: 1, m: 30, text: "1.5h" },
+	    { h: 2, m: 0, text: "2h" }
+	  ];
+
+	  for (var i = 0; i < presets.length; i++) {
+	    bar.appendChild(
+	      themedButton(presets[i].text, "tm-preset", {
+	        "data-h": String(presets[i].h),
+	        "data-m": String(presets[i].m)
+	      })
+	    );
+	  }
+
+	  bar.appendChild(
+	    makeEl("span", {
+	      className: "tm-status",
+	      style: {
+	        fontSize: "12px",
+	        color: rgba(fg, 0.8),
+	        marginLeft: "auto"
+	      }
+	    })
+	  );
+
+	  return bar;
+	}
 
   function wireBar(bar, applyFn) {
     var hrsInput = bar.querySelector(".tm-hrs");
