@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Syncro – Duration Helper - Final
-// Credit:       https://github.com/esperto/Syncro-TamperMonkey
+// @homepageURL  https://github.com/esperto/Syncro-TamperMonkey
 // @namespace    http://tampermonkey.net/
-// @version      2.4 (texomans-v1)
-// @description  Add h:m duration presets to both the Labor Log modal and the Comment form
-// @author       Nick F
+// @version      2.5.1
+// @description  Add smart duration presets to both the Labor Log modal and the Comment form
+// @author       Nick F + Gary H
 // @match        https://*.syncromsp.com/tickets/*
+// @match        https://*.shield.syncromsp.com/tickets/*
 // @grant        none
 // ==/UserScript==
 
@@ -48,6 +49,19 @@
     return { h: endH, m: endM, display: fmt12h(endH, endM) };
   }
 
+  function calcStartFromHM(endH, endM, hours, minutes) {
+    var totalMin = endH * 60 + endM - (hours * 60 + minutes);
+    totalMin = (totalMin % (24 * 60) + (24 * 60)) % (24 * 60);
+    var startH = Math.floor(totalMin / 60);
+    var startM = totalMin % 60;
+    return { h: startH, m: startM, display: fmt12h(startH, startM) };
+  }
+
+  function nowHM() {
+    var d = new Date();
+    return { h: d.getHours(), m: d.getMinutes() };
+  }
+
   function makeDurLabel(hours, minutes) {
     if (hours > 0) {
       return hours + "h" + (minutes > 0 ? " " + minutes + "m" : "");
@@ -55,265 +69,331 @@
     return minutes + "m";
   }
 
-  /* ═══════════════════ BAR BUILDER ═══════════════════ */
-
-  function makeEl(tag, attrs, text) {
-    var el = document.createElement(tag);
-    if (attrs) {
-      for (var key in attrs) {
-        if (key === "style" && typeof attrs[key] === "object") {
-          for (var s in attrs[key]) {
-            el.style[s] = attrs[key][s];
-          }
-        } else if (key === "className") {
-          el.className = attrs[key];
-        } else {
-          el.setAttribute(key, attrs[key]);
-        }
-      }
-    }
-    if (text) el.textContent = text;
-    return el;
+  function formatDurationFromMinutes(totalMin) {
+    totalMin = Math.max(0, Math.round(totalMin || 0));
+    var h = Math.floor(totalMin / 60);
+    var m = totalMin % 60;
+    if (h === 0) return m + "m";
+    if (m === 0) return h + "h";
+    return h + ":" + pad2(m);
   }
 
-	function createBar(id) {
-	  var pageStyles = window.getComputedStyle(document.body);
+  // Smart duration parser:
+  // Accepts: 2h, 25m, 1.5h, 1:25, 02:30, 1h30m, 1h 30m (case-insensitive)
+  // Plain number like "1.5" assumes hours.
+  function parseDurationInput(raw) {
+    if (!raw) return null;
+    var s = String(raw).trim();
+    if (!s) return null;
 
-	  var bg = pageStyles.backgroundColor || "#222";
-	  var fg = pageStyles.color || "#ddd";
+    s = s.replace(/\s+/g, " ").trim();
 
-	  function rgba(color, alpha) {
-	    if (!color.startsWith("rgb")) return color;
+    // H:MM
+    if (s.indexOf(":") !== -1) {
+      var parts = s.split(":");
+      if (parts.length !== 2) return null;
+      var hh = parseInt(parts[0], 10);
+      var mm = parseInt(parts[1], 10);
+      if (isNaN(hh) || isNaN(mm)) return null;
+      if (mm < 0 || mm > 59 || hh < 0) return null;
+      return { h: hh, m: mm };
+    }
 
-	    var vals = color.match(/\d+/g);
-	    if (!vals || vals.length < 3) return color;
+    // Plain number => hours
+    if (/^\d+(\.\d+)?$/.test(s)) {
+      var hrs = parseFloat(s);
+      if (isNaN(hrs) || hrs <= 0) return null;
+      var totalMin = Math.round(hrs * 60);
+      return { h: Math.floor(totalMin / 60), m: totalMin % 60 };
+    }
 
-	    return "rgba(" + vals[0] + "," + vals[1] + "," + vals[2] + "," + alpha + ")";
-	  }
+    // Token-based
+    var lower = s.toLowerCase();
+    var hasH = /h/.test(lower);
+    var hasM = /m/.test(lower);
 
-	  var isDark =
-	    pageStyles.backgroundColor.match(/\d+/g)
-	      .slice(0, 3)
-	      .map(Number)
-	      .reduce((a, b) => a + b, 0) / 3 < 128;
+    var hours = 0;
+    var minutes = 0;
 
-	  var subtleBg = isDark ? rgba(fg, 0.06) : "#f7f8fb";
-	  var subtleBorder = isDark ? rgba(fg, 0.18) : "#d9dce3";
-	  var buttonBg = isDark ? rgba(fg, 0.10) : "#ffffff";
-	  var buttonHover = isDark ? rgba(fg, 0.18) : "#eef2f7";
+    if (hasH) {
+      var hm = lower.match(/(\d+(?:\.\d+)?)\s*h/);
+      if (!hm) return null;
+      hours = parseFloat(hm[1]);
+      if (isNaN(hours) || hours < 0) return null;
+    }
 
-	  var bar = document.createElement("div");
-	  bar.id = id;
+    if (hasM) {
+      var mmatch = lower.match(/(\d+)\s*m/);
+      if (!mmatch) return null;
+      minutes = parseInt(mmatch[1], 10);
+      if (isNaN(minutes) || minutes < 0) return null;
+    }
 
-	  Object.assign(bar.style, {
-	    display: "flex",
-	    flexWrap: "wrap",
-	    alignItems: "center",
-	    gap: "6px",
-	    marginTop: "10px",
-	    padding: "10px 12px",
-	    background: subtleBg,
-	    color: fg,
-	    border: "1px solid " + subtleBorder,
-	    borderRadius: "8px",
-	    fontFamily: "Roboto, Helvetica, Arial, sans-serif",
-	    backdropFilter: "blur(4px)"
-	  });
+    if (!hasH && !hasM) return null;
 
-	  function makeEl(tag, attrs, text) {
-	    var el = document.createElement(tag);
+    var total = Math.round(hours * 60) + minutes;
+    if (total < 0) return null;
 
-	    if (attrs) {
-	      for (var key in attrs) {
-	        if (key === "style" && typeof attrs[key] === "object") {
-	          Object.assign(el.style, attrs[key]);
-	        } else if (key === "className") {
-	          el.className = attrs[key];
-	        } else {
-	          el.setAttribute(key, attrs[key]);
-	        }
-	      }
-	    }
+    return { h: Math.floor(total / 60), m: total % 60 };
+  }
 
-	    if (text) el.textContent = text;
+  /* ═══════════════════ BAR BUILDER ═══════════════════ */
 
-	    return el;
-	  }
+  function createBar(id) {
+    var pageStyles = window.getComputedStyle(document.body);
+    var fg = pageStyles.color || "#ddd";
 
-	  function themedButton(text, className, extraAttrs) {
-	    var btn = makeEl(
-	      "button",
-	      Object.assign(
-	        {
-	          className: className,
-	          type: "button",
-	          style: {
-	            padding: "5px 12px",
-	            background: buttonBg,
-	            color: fg,
-	            border: "1px solid " + subtleBorder,
-	            borderRadius: "4px",
-	            cursor: "pointer",
-	            fontSize: "12px",
-	            fontWeight: "500",
-	            transition: "all 0.15s ease"
-	          }
-	        },
-	        extraAttrs || {}
-	      ),
-	      text
-	    );
+    function rgba(color, alpha) {
+      if (!color || !color.startsWith("rgb")) return color || "rgba(0,0,0," + alpha + ")";
+      var vals = color.match(/\d+/g);
+      if (!vals || vals.length < 3) return color;
+      return "rgba(" + vals[0] + "," + vals[1] + "," + vals[2] + "," + alpha + ")";
+    }
 
-	    btn.addEventListener("mouseenter", function () {
-	      btn.style.background = buttonHover;
-	    });
+    var isDark =
+      pageStyles.backgroundColor &&
+      pageStyles.backgroundColor.match(/\d+/g) &&
+      pageStyles.backgroundColor.match(/\d+/g)
+        .slice(0, 3)
+        .map(Number)
+        .reduce(function (a, b) { return a + b; }, 0) / 3 < 128;
 
-	    btn.addEventListener("mouseleave", function () {
-	      btn.style.background = buttonBg;
-	    });
+    var subtleBg = isDark ? rgba(fg, 0.06) : "#f7f8fb";
+    var subtleBorder = isDark ? rgba(fg, 0.18) : "#d9dce3";
+    var buttonBg = isDark ? rgba(fg, 0.10) : "#ffffff";
+    var buttonHover = isDark ? rgba(fg, 0.18) : "#eef2f7";
 
-	    return btn;
-	  }
-
-	  var label = makeEl(
-	    "span",
-	    {
-	      style: {
-	        fontSize: "13px",
-	        fontWeight: "600",
-	        color: fg
-	      }
-	    }
-	  );
-
-	  label.innerHTML = "&#9201; Duration:";
-	  bar.appendChild(label);
-
-	  function themedInput(className, value, max) {
-	    return makeEl("input", {
-	      className: className,
-	      type: "number",
-	      min: "0",
-	      max: max,
-	      value: value,
-	      style: {
-	        width: "46px",
-	        padding: "5px 4px",
-	        background: isDark ? rgba(fg, 0.04) : "#ffffff",
-	        color: fg,
-	        border: "1px solid " + subtleBorder,
-	        borderRadius: "4px",
-	        textAlign: "center",
-	        fontSize: "13px"
-	      }
-	    });
-	  }
-
-	  bar.appendChild(themedInput("tm-hrs", "1", "23"));
-
-	  bar.appendChild(
-	    makeEl(
-	      "span",
-	      {
-	        style: {
-	          fontSize: "12px",
-	          color: fg
-	        }
-	      },
-	      "h"
-	    )
-	  );
-
-	  bar.appendChild(themedInput("tm-mins", "0", "59"));
-
-	  bar.appendChild(
-	    makeEl(
-	      "span",
-	      {
-	        style: {
-	          fontSize: "12px",
-	          color: fg
-	        }
-	      },
-	      "m"
-	    )
-	  );
-
-	  bar.appendChild(
-	    themedButton("Apply", "tm-apply", {
-	      style: {
-            background: isDark ? "rgba(25,118,210,0.18)" : "#eaf2ff",
-            color: isDark ? fg : "#174ea6",
-            border: isDark
-              ? "1px solid rgba(25,118,210,0.45)"
-              : "1px solid #9bbcf2"
+    function makeEl(tag, attrs, text) {
+      var el = document.createElement(tag);
+      if (attrs) {
+        for (var key in attrs) {
+          if (key === "style" && typeof attrs[key] === "object") {
+            Object.assign(el.style, attrs[key]);
+          } else if (key === "className") {
+            el.className = attrs[key];
+          } else {
+            el.setAttribute(key, attrs[key]);
+          }
         }
-	    })
-	  );
+      }
+      if (text) el.textContent = text;
+      return el;
+    }
 
-	  bar.appendChild(
-	    makeEl(
-	      "span",
-	      {
-	        style: {
-	          fontSize: "12px",
-	          color: rgba(fg, 0.5),
-	          marginLeft: "2px"
-	        }
-	      },
-	      "|"
-	    )
-	  );
+    function themedButton(text, className, extraAttrs) {
+      var btn = makeEl(
+        "button",
+        Object.assign(
+          {
+            className: className,
+            type: "button",
+            style: {
+              padding: "3px 10px",              // reduced vertical padding by 1px
+              background: buttonBg,
+              color: fg,
+              border: "1px solid " + subtleBorder,
+              borderRadius: "4px",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: "500",
+              transition: "all 0.15s ease",
+              whiteSpace: "nowrap"
+            }
+          },
+          extraAttrs || {}
+        ),
+        text
+      );
 
-	  var presets = [
-	    { h: 0, m: 15, text: "15m" },
-	    { h: 0, m: 30, text: "30m" },
-	    { h: 0, m: 45, text: "45m" },
-	    { h: 1, m: 0, text: "1h" },
-	    { h: 1, m: 30, text: "1.5h" },
-	    { h: 2, m: 0, text: "2h" }
-	  ];
+      btn.addEventListener("mouseenter", function () {
+        btn.style.background = buttonHover;
+      });
 
-	  for (var i = 0; i < presets.length; i++) {
-	    bar.appendChild(
-	      themedButton(presets[i].text, "tm-preset", {
-	        "data-h": String(presets[i].h),
-	        "data-m": String(presets[i].m)
-	      })
-	    );
-	  }
+      btn.addEventListener("mouseleave", function () {
+        btn.style.background = buttonBg;
+      });
 
-	  bar.appendChild(
-	    makeEl("span", {
-	      className: "tm-status",
-	      style: {
-	        fontSize: "12px",
-	        color: rgba(fg, 0.8),
-	        marginLeft: "auto"
-	      }
-	    })
-	  );
+      return btn;
+    }
 
-	  return bar;
-	}
+    var bar = document.createElement("div");
+    bar.id = id;
+
+    Object.assign(bar.style, {
+      display: "flex",
+      flexDirection: "column",                // two-row layout
+      gap: "6px",
+      marginTop: "6px",
+      padding: "5px 8px",                     // reduced padding
+      width: "100%",
+      maxWidth: "100%",
+      boxSizing: "border-box",
+      overflowX: "hidden",
+      overflowY: "visible",
+      background: subtleBg,
+      color: fg,
+      border: "1px solid " + subtleBorder,
+      borderRadius: "8px",
+      fontFamily: "Roboto, Helvetica, Arial, sans-serif",
+      backdropFilter: "blur(4px)"
+    });
+
+    var rowTop = makeEl("div", {
+      className: "tm-row-top",
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: "6px",
+        flexWrap: "wrap"
+      }
+    });
+
+    var rowBottom = makeEl("div", {
+      className: "tm-row-bottom",
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: "6px",
+        flexWrap: "wrap"
+      }
+    });
+
+    bar.appendChild(rowTop);
+    bar.appendChild(rowBottom);
+
+    var label = makeEl(
+      "span",
+      {
+        style: {
+          fontSize: "13px",
+          fontWeight: "600",
+          color: fg,
+          marginRight: "2px",
+          whiteSpace: "nowrap"
+        }
+      },
+      "⏱ Duration:"
+    );
+    rowTop.appendChild(label);
+
+    var durInput = makeEl("input", {
+      className: "tm-dur",
+      type: "text",
+      value: "15m",
+      placeholder: "e.g. 25m, 2h, 1.5, 1:25",
+      style: {
+        width: "170px",
+        maxWidth: "100%",
+        padding: "4px 8px",
+        background: isDark ? rgba(fg, 0.04) : "#ffffff",
+        color: fg,
+        border: "1px solid " + subtleBorder,
+        borderRadius: "4px",
+        fontSize: "13px",
+        boxSizing: "border-box"
+      }
+    });
+    rowTop.appendChild(durInput);
+
+    var applyBtn = themedButton("Apply", "tm-apply", {
+      style: {
+        background: isDark ? "rgba(25,118,210,0.18)" : "#eaf2ff",
+        color: isDark ? fg : "#174ea6",
+        border: isDark
+          ? "1px solid rgba(25,118,210,0.45)"
+          : "1px solid #9bbcf2",
+        display: "none"                        // contextual visibility
+      }
+    });
+    rowTop.appendChild(applyBtn);
+
+    // “Now” micro-indicator (hidden by default)
+    var nowEl = makeEl("span", {
+      className: "tm-now",
+      style: {
+        fontSize: "11px",
+        color: rgba(fg, 0.65),
+        whiteSpace: "nowrap",
+        display: "none",
+        paddingLeft: "4px"
+      }
+    }, "Ends at now");
+    rowTop.appendChild(nowEl);
+
+    var presets = [
+      { h: 0, m: 15, text: "15m" },
+      { h: 0, m: 30, text: "30m" },
+      { h: 0, m: 45, text: "45m" },
+      { h: 1, m: 0, text: "1h" },
+      { h: 1, m: 30, text: "1.5h" },
+      { h: 2, m: 0, text: "2h" }
+    ];
+
+    var presetsWrap = makeEl("div", {
+      className: "tm-presets-wrap",
+      style: {
+        display: "flex",
+        flexWrap: "wrap",
+        gap: "6px",
+        alignItems: "center",
+        maxWidth: "100%",
+        boxSizing: "border-box"
+      }
+    });
+    rowBottom.appendChild(presetsWrap);
+
+    for (var i = 0; i < presets.length; i++) {
+      presetsWrap.appendChild(
+        themedButton(presets[i].text, "tm-preset", {
+          "data-h": String(presets[i].h),
+          "data-m": String(presets[i].m)
+        })
+      );
+    }
+
+    // Keep a status element for compatibility, but unused (disabled output)
+    bar.appendChild(
+      makeEl("span", {
+        className: "tm-status",
+        style: { display: "none" }
+      })
+    );
+
+    return bar;
+  }
 
   function wireBar(bar, applyFn) {
-    var hrsInput = bar.querySelector(".tm-hrs");
-    var minsInput = bar.querySelector(".tm-mins");
+    var durInput = bar.querySelector(".tm-dur");
     var applyBtn = bar.querySelector(".tm-apply");
-    var statusEl = bar.querySelector(".tm-status");
+    var nowEl = bar.querySelector(".tm-now");
+
+    function setNowIndicator(on) {
+      if (!nowEl) return;
+      nowEl.style.display = on ? "inline" : "none";
+    }
+
+    function showApply(on) {
+      if (!applyBtn) return;
+      applyBtn.style.display = on ? "inline-block" : "none";
+    }
 
     function showStatus(msg, color) {
-      statusEl.textContent = msg;
-      statusEl.style.color = color || "#555";
+      // intentionally disabled
+    }
+
+    function applyFromInput() {
+      var parsed = parseDurationInput(durInput.value);
+      if (!parsed || (parsed.h === 0 && parsed.m === 0)) {
+        setNowIndicator(false);
+        return;
+      }
+      applyFn(parsed.h, parsed.m, showStatus, setNowIndicator);
     }
 
     applyBtn.addEventListener("click", function (e) {
       e.preventDefault();
       e.stopPropagation();
-      var h = parseInt(hrsInput.value, 10) || 0;
-      var m = parseInt(minsInput.value, 10) || 0;
-      applyFn(h, m, showStatus);
+      applyFromInput();
     });
 
     var presetBtns = bar.querySelectorAll(".tm-preset");
@@ -322,26 +402,136 @@
         btn.addEventListener("click", function (e) {
           e.preventDefault();
           e.stopPropagation();
-          var h = parseInt(btn.getAttribute("data-h"), 10);
-          var m = parseInt(btn.getAttribute("data-m"), 10);
-          hrsInput.value = h;
-          minsInput.value = m;
-          applyFn(h, m, showStatus);
+          var h = parseInt(btn.getAttribute("data-h"), 10) || 0;
+          var m = parseInt(btn.getAttribute("data-m"), 10) || 0;
+          durInput.value = btn.textContent || makeDurLabel(h, m);
+          showApply(false);
+          applyFn(h, m, showStatus, setNowIndicator);
         });
       })(presetBtns[i]);
     }
 
-    var inputs = [hrsInput, minsInput];
-    for (var j = 0; j < inputs.length; j++) {
-      inputs[j].addEventListener("keydown", function (e) {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          e.stopPropagation();
-          applyBtn.click();
+    // Contextual Apply visibility: only when typing/focused
+    durInput.addEventListener("focus", function () {
+      showApply(true);
+    });
+
+    durInput.addEventListener("input", function () {
+      showApply(true);
+    });
+
+    durInput.addEventListener("blur", function () {
+      // small delay in case user clicks Apply
+      setTimeout(function () {
+        if (document.activeElement !== applyBtn) {
+          showApply(false);
         }
-      });
-    }
+      }, 150);
+    });
+
+    // Keyboard power controls
+    durInput.addEventListener("keydown", function (e) {
+      var key = e.key;
+
+      if (key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        applyFromInput();
+        return;
+      }
+
+      if (key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        durInput.value = "";
+        setNowIndicator(false);
+        showApply(false);
+        return;
+      }
+
+
+      var delta = 0;
+
+      // Default arrows (no modifier)
+      if (!e.shiftKey && !e.ctrlKey && !e.altKey) {
+        if (key === "ArrowUp") delta = +15;
+        else if (key === "ArrowDown") delta = -15;
+
+        // IMPORTANT: do NOT capture left/right anymore
+        // ArrowLeft / ArrowRight will behave normally (cursor movement)
+      }
+
+      // Shift + Up/Down = +/- 30 minutes
+      if (e.shiftKey && !e.ctrlKey && !e.altKey) {
+        if (key === "ArrowUp") delta = +30;
+        else if (key === "ArrowDown") delta = -30;
+      }
+
+      // If you prefer Ctrl instead of Shift, use this block instead (optional):
+      // if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+      //   if (key === "ArrowUp") delta = +30;
+      //   else if (key === "ArrowDown") delta = -30;
+      // }
+
+      if (delta !== 0) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        var parsed = parseDurationInput(durInput.value);
+        var curMin = 0;
+        if (parsed) curMin = parsed.h * 60 + parsed.m;
+
+        var nextMin = Math.max(0, curMin + delta);
+        durInput.value = formatDurationFromMinutes(nextMin);
+        setNowIndicator(false);
+        showApply(true);
+      }
+
+    });
   }
+
+    function wireTimeFieldArrows(inputEl, setFn) {
+        if (!inputEl || inputEl.__tmTimeArrowsBound) return;
+        inputEl.__tmTimeArrowsBound = true;
+
+        function toTotalMinutes(t) {
+            return t.h * 60 + t.m;
+        }
+
+        function fromTotalMinutes(total) {
+            total = (total % (24 * 60) + (24 * 60)) % (24 * 60);
+            return { h: Math.floor(total / 60), m: total % 60 };
+        }
+
+        inputEl.addEventListener("keydown", function (e) {
+            if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+
+            var dir = e.key === "ArrowUp" ? 1 : -1;
+
+            // Ctrl (or Alt) = +/- 1 hour
+            // Shift = +/- 5 minutes
+            // Default = +/- 1 minute
+            var deltaMin = 0;
+            if (e.ctrlKey || e.altKey) deltaMin = 60 * dir;
+            else if (e.shiftKey) deltaMin = 5 * dir;
+            else deltaMin = 1 * dir;
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            var cur = (inputEl.value || "").trim();
+
+            // If empty or unparsable, start from "now"
+            var parsed = cur ? parse12h(cur) : null;
+            if (!parsed) {
+                var now = nowHM();
+                parsed = { h: now.h, m: now.m };
+            }
+
+            var next = fromTotalMinutes(toTotalMinutes(parsed) + deltaMin);
+            setFn(fmt12h(next.h, next.m));
+        });
+    }
 
   /* ═══════════════════ 1. LABOR LOG MODAL (React/MUI) ═══════════════════ */
 
@@ -358,11 +548,18 @@
     }
 
     var syntheticEvent = {
-      target: el, currentTarget: el, type: "change",
+      target: el,
+      currentTarget: el,
+      type: "change",
       nativeEvent: new Event("change", { bubbles: true }),
-      preventDefault: function () {}, stopPropagation: function () {},
-      persist: function () {}, bubbles: true, cancelable: true,
-      defaultPrevented: false, eventPhase: 0, isTrusted: false,
+      preventDefault: function () {},
+      stopPropagation: function () {},
+      persist: function () {},
+      bubbles: true,
+      cancelable: true,
+      defaultPrevented: false,
+      eventPhase: 0,
+      isTrusted: false,
       timeStamp: Date.now()
     };
 
@@ -414,28 +611,41 @@
     var bar = createBar("tm-laborlog-helper");
     wrapper.appendChild(bar);
 
-    wireBar(bar, function (hours, minutes, showStatus) {
+    wireBar(bar, function (hours, minutes, showStatus, setNowIndicator) {
       if (hours === 0 && minutes === 0) {
-        showStatus("Enter a duration first", "#c62828");
+        setNowIndicator(false);
         return;
       }
-      var result = calcEndTime(fromInput.value, hours, minutes);
-      if (!result) {
-        showStatus("Set a valid From time first", "#c62828");
+
+      var fromVal = fromInput.value ? fromInput.value.trim() : "";
+      if (!fromVal) {
+        var now = nowHM();
+        var endDisplay = fmt12h(now.h, now.m);
+        var start = calcStartFromHM(now.h, now.m, hours, minutes);
+
+        var ok1 = setReactValue(fromInput, start.display);
+        var ok2 = setReactValue(toInput, endDisplay);
+
+        setNowIndicator(true); // Ends at now
+        if (!ok1 || !ok2) {
+          setNowIndicator(false);
+        }
         return;
       }
-      var success = setReactValue(toInput, result.display);
-      if (success) {
-        showStatus(fromInput.value + " + " + makeDurLabel(hours, minutes) + " = " + result.display, "#2e7d32");
-      } else {
-        showStatus("Could not set To field", "#c62828");
-      }
+
+      setNowIndicator(false);
+
+      var result = calcEndTime(fromVal, hours, minutes);
+      if (!result) return;
+
+      setReactValue(toInput, result.display);
     });
   }
 
   function cleanupLaborLog() {
     var el = document.getElementById("tm-laborlog-helper");
     if (!el) return;
+
     var allP = document.querySelectorAll("p.MuiTypography-root");
     var found = false;
     for (var i = 0; i < allP.length; i++) {
@@ -457,7 +667,7 @@
           $input.trigger("change");
           return true;
         }
-      } catch (e) { /* fallback below */ }
+      } catch (e) {}
       $input.val(timeStr).trigger("change");
       return true;
     }
@@ -473,6 +683,13 @@
     var endInput = document.getElementById("comment_end_at");
     if (!startInput || !endInput) return;
 
+      // Arrow keys on Start/End fields:
+      // Up/Down = +/- 1 minute
+      // Shift+Up/Down = +/- 5 minutes
+      // Ctrl+Up/Down (or Alt+Up/Down) = +/- 1 hour
+      wireTimeFieldArrows(startInput, function (v) { setTimepickerValue(startInput, v); });
+      wireTimeFieldArrows(endInput, function (v) { setTimepickerValue(endInput, v); });
+
     var durationRow = endInput.closest(".row");
     if (!durationRow) return;
 
@@ -486,7 +703,8 @@
     spacerCol.className = "col-sm-2";
 
     var contentCol = document.createElement("div");
-    contentCol.className = "col-sm-8";
+    contentCol.className = "col-sm-10";
+    contentCol.style.width = "100%";
     contentCol.appendChild(bar);
 
     wrapperRow.appendChild(spacerCol);
@@ -498,27 +716,33 @@
       durationRow.parentNode.appendChild(wrapperRow);
     }
 
-    wireBar(bar, function (hours, minutes, showStatus) {
+    wireBar(bar, function (hours, minutes, showStatus, setNowIndicator) {
       if (hours === 0 && minutes === 0) {
-        showStatus("Enter a duration first", "#c62828");
+        setNowIndicator(false);
         return;
       }
+
       var fromVal = startInput.value ? startInput.value.trim() : "";
+
+      // If Start is empty, set Start = now - duration, End = now
       if (!fromVal) {
-        showStatus("Set a Start time first", "#c62828");
+        var now = nowHM();
+        var endDisplay = fmt12h(now.h, now.m);
+        var start = calcStartFromHM(now.h, now.m, hours, minutes);
+
+        setTimepickerValue(startInput, start.display);
+        setTimepickerValue(endInput, endDisplay);
+
+        setNowIndicator(true); // Ends at now
         return;
       }
+
+      setNowIndicator(false);
+
       var result = calcEndTime(fromVal, hours, minutes);
-      if (!result) {
-        showStatus("Could not parse Start time", "#c62828");
-        return;
-      }
-      var success = setTimepickerValue(endInput, result.display);
-      if (success) {
-        showStatus(fromVal + " + " + makeDurLabel(hours, minutes) + " = " + result.display, "#2e7d32");
-      } else {
-        showStatus("Could not set End field", "#c62828");
-      }
+      if (!result) return;
+
+      setTimepickerValue(endInput, result.display);
     });
   }
 
